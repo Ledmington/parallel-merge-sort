@@ -1,202 +1,168 @@
+/*
+ *  This file is part of Christian's OpenMP software lab
+ *
+ *  Copyright (C) 2016 by Christian Terboven <terboven@itc.rwth-aachen.de>
+ *  Copyright (C) 2016 by Jonas Hahnfeld <hahnfeld@itc.rwth-aachen.de>
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <sys/time.h>
+
 #include <iostream>
-#include <cassert>
-#include <chrono>
-#include <vector>
-#include <random>
-#include <cstdint>
-#include <limits>
-#include <iomanip>
-#include <unordered_map>
+#include <algorithm>
+
+#include <cstdlib>
+#include <cstdio>
+
+#include <cmath>
+#include <ctime>
 #include <cstring>
 
-#ifndef _OPENMP
-#error "OpenMP not defined, retry by adding '-fopenmp' to compile options."
-#endif
-
-#include <omp.h>
-
-using element_type = uint32_t;
-
-template <typename T>
-void swap(T* a, T* b) {
-	const T tmp = *a;
-	*a = *b;
-	*b = tmp;
+/**
+ * helper routine: check if array is sorted correctly
+ */
+bool isSorted(int ref[], int data[], const size_t size) {
+	std::sort(ref, ref + size);
+	for (size_t idx = 0; idx < size; ++idx) {
+		if (ref[idx] != data[idx]) {
+			return false;
+		}
+	}
+	return true;
 }
 
-template <typename T>
-void merge(T* v, T* tmp, const size_t left_length, const size_t right_length) {
-	// This function assumes that 'v' is the pointer to the element of two
-	// contiguous (non-overlapping) blocks of memory of length 'left_length' and
-	// 'right_length' respectively. 'tmp' is a pointer to a memory region with
-	// the same size to be used as "temporary working space" to sort the array.
+/**
+ * sequential merge step (straight-forward implementation)
+ */
+// TODO: cut-off could also apply here (extra parameter?)
+// TODO: optional: we can also break merge in two halves
+void MsMergeSequential(int *out, int *in, long begin1, long end1, long begin2,
+					   long end2, long outBegin) {
+	long left = begin1;
+	long right = begin2;
 
-	T* right = v + left_length;
-	size_t i{0};
-	size_t j{0};
-	size_t k{0};
+	long idx = outBegin;
 
-	while (i < left_length && j < right_length) {
-		if (v[i] < right[j]) {
-			tmp[k] = v[i];
-			i++;
+	while (left < end1 && right < end2) {
+		if (in[left] <= in[right]) {
+			out[idx] = in[left];
+			left++;
 		} else {
-			tmp[k] = right[j];
-			j++;
+			out[idx] = in[right];
+			right++;
 		}
-		k++;
+		idx++;
 	}
 
-	while (i < left_length) {
-		tmp[k] = v[i];
-		i++;
-		k++;
+	while (left < end1) {
+		out[idx] = in[left];
+		left++, idx++;
 	}
 
-	while (j < right_length) {
-		tmp[k] = right[j];
-		j++;
-		k++;
+	while (right < end2) {
+		out[idx] = in[right];
+		right++, idx++;
 	}
-
-	// copy back the temporary array
-	std::memcpy(v, tmp, (left_length + right_length) * sizeof(T));
 }
 
-template <typename T>
-void merge_sort(T* v, T* tmp, const size_t n) {
-	if (n <= 1) {
-		return;
-	}
-
-	const size_t left_length = n / 2;
-	const size_t right_length = n - left_length;
-	assert(left_length + right_length == n);
-
-	merge_sort(v, tmp, left_length);
-	merge_sort(v + left_length, tmp + left_length, right_length);
-	merge(v, tmp, left_length, right_length);
-}
-
-template <typename T>
-void check(const std::vector<T>& original, const std::vector<T>& v) {
-	// This function does not only check that v is sorted but it checks that v
-	// has the same elements of 'original'
-
-	if (original.size() != v.size()) {
-		throw std::runtime_error("Vectors have different sizes: expected " +
-								 std::to_string(original.size()) + " but was " +
-								 std::to_string(v.size()));
-	}
-
-	for (size_t i{0}; i < v.size() - 1; i++) {
-		if (v.at(i + 1) < v.at(i)) {
-			throw std::runtime_error("Vector is not sorted: element at index " +
-									 std::to_string(i) + " (" +
-									 std::to_string(v[i]) +
-									 ") is greater than next element (" +
-									 std::to_string(v[i + 1]) + ")");
-		}
-	}
-
-	std::unordered_map<T, uint64_t> count_original;
-	for (const T x : original) {
-		if (count_original.find(x) == count_original.end()) {
-			count_original[x] = 1;
+/**
+ * sequential MergeSort
+ */
+// TODO: remember one additional parameter (depth)
+// TODO: recursive calls could be taskyfied
+// TODO: task synchronization also is required
+void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
+	if (begin < (end - 1)) {
+		const long half = (begin + end) / 2;
+		MsSequential(array, tmp, !inplace, begin, half);
+		MsSequential(array, tmp, !inplace, half, end);
+		if (inplace) {
+			MsMergeSequential(array, tmp, begin, half, half, end, begin);
 		} else {
-			count_original[x]++;
+			MsMergeSequential(tmp, array, begin, half, half, end, begin);
 		}
-	}
-
-	std::unordered_map<T, uint64_t> count_v;
-	for (const T x : v) {
-		if (count_v.find(x) == count_v.end()) {
-			count_v[x] = 1;
-		} else {
-			count_v[x]++;
-		}
-	}
-
-	if (count_original.size() != count_v.size()) {
-		throw std::runtime_error(
-			"Different number of unique elements in vectors: expected " +
-			std::to_string(count_original.size()) + " but were " +
-			std::to_string(count_v.size()));
-	}
-
-	for (auto const& [key, val] : count_original) {
-		if (count_v.find(key) == count_v.end()) {
-			throw std::runtime_error(
-				"Original vector contained a key (" + std::to_string(key) +
-				") which did not appear in the other vector.");
-		}
-		if (count_v[key] != val) {
-			throw std::runtime_error("Wrong number of elements (" +
-									 std::to_string(key) + "): expected " +
-									 std::to_string(val) + " but were " +
-									 std::to_string(count_v[key]));
-		}
+	} else if (!inplace) {
+		tmp[begin] = array[begin];
 	}
 }
 
-int main(int argc, char* argv[]) {
-	std::random_device dev;
-	std::mt19937 rnd{dev()};
-	std::uniform_int_distribution<element_type> dist{
-		std::numeric_limits<element_type>::min(),
-		std::numeric_limits<element_type>::max()};
+/**
+ * Serial MergeSort
+ */
+// TODO: this function should create the parallel region
+// TODO: good point to compute a good depth level (cut-off)
+void MsSerial(int *array, int *tmp, const size_t size) {
+	// TODO: parallel version of MsSequential will receive one more parameter:
+	// 'depth' (used as cut-off)
+	MsSequential(array, tmp, true, 0, size);
+}
 
-	std::ios default_io_state(nullptr);
-	default_io_state.copyfmt(std::cout);
+/**
+ * @brief program entry point
+ */
+int main(int argc, char *argv[]) {
+	// variables to measure the elapsed time
+	struct timeval t1, t2;
+	double etime;
 
-	std::cout << "Type of one element: " << typeid(element_type).name()
-			  << std::endl;
-	std::cout << "Size of one element: " << sizeof(element_type) << " bytes"
-			  << std::endl;
-	std::cout << "Min value: " << std::numeric_limits<element_type>::min()
-			  << " (0x" << std::hex << std::setw(2 * sizeof(element_type))
-			  << std::setfill('0') << std::numeric_limits<element_type>::min()
-			  << ")" << std::endl;
-	std::cout.copyfmt(default_io_state);
-	std::cout << "Max value: " << std::numeric_limits<element_type>::max()
-			  << " (0x" << std::hex << std::setw(2 * sizeof(element_type))
-			  << std::setfill('0') << std::numeric_limits<element_type>::max()
-			  << ")" << std::endl;
-	std::cout.copyfmt(default_io_state);
+	// expect one command line arguments: array size
+	if (argc != 2) {
+		printf("Usage: MergeSort.exe <array size> \n");
+		printf("\n");
+		return EXIT_FAILURE;
+	} else {
+		const size_t stSize = strtol(argv[1], NULL, 10);
+		int *data = (int *)malloc(stSize * sizeof(int));
+		int *tmp = (int *)malloc(stSize * sizeof(int));
+		int *ref = (int *)malloc(stSize * sizeof(int));
 
-	size_t n_elements = 100;
-	if (argc > 1) {
-		n_elements = strtoul(argv[1], NULL, 10);
-		if (n_elements < 1) {
-			std::cerr << "Error: Number of elements must be a positive integer."
-					  << std::endl;
-			std::exit(-1);
+		printf("Initialization...\n");
+
+		srand(95);
+		for (size_t idx = 0; idx < stSize; ++idx) {
+			data[idx] = (int)(stSize * (double(rand()) / RAND_MAX));
 		}
+		std::copy(data, data + stSize, ref);
+
+		double dSize = (stSize * sizeof(int)) / 1024 / 1024;
+		printf("Sorting %zu elements of type int (%f MiB)...\n", stSize, dSize);
+
+		gettimeofday(&t1, NULL);
+		MsSerial(data, tmp, stSize);
+		gettimeofday(&t2, NULL);
+
+		etime =
+			(t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000;
+		etime = etime / 1000;
+
+		printf("done, took %f sec. Verification...", etime);
+		if (isSorted(ref, data, stSize)) {
+			printf(" successful.\n");
+		} else {
+			printf(" FAILED.\n");
+		}
+
+		free(data);
+		free(tmp);
+		free(ref);
 	}
 
-	if (argc > 2) {
-		std::cerr << "WARNING: passed more arguments than needed." << std::endl;
-	}
-
-	std::cout << "Using " << n_elements << " elements ("
-			  << (n_elements * sizeof(element_type)) << " bytes)" << std::endl;
-
-	std::vector<element_type> original(n_elements);
-	for (size_t i{0}; i < n_elements; i++) {
-		original[i] = dist(rnd);
-	}
-
-	// copy
-	std::vector<element_type> v = original;
-	std::vector<element_type> tmp(n_elements);
-
-	const double start = omp_get_wtime();
-	merge_sort(v.data(), tmp.data(), v.size());
-	const double end = omp_get_wtime();
-	const double elapsed_seconds = end - start;
-	std::cout << "Time: " << elapsed_seconds << " seconds" << std::endl;
-
-	check(original, v);
-
-	return 0;
+	return EXIT_SUCCESS;
 }
