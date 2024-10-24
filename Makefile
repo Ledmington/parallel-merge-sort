@@ -1,13 +1,20 @@
-CXX=g++
-CXX_FLAGS=--std=c++17 -Wall -Wextra -Wpedantic -Wshadow -Wsign-conversion -Wfloat-conversion -Werror
-DEBUG_FLAGS=-O0 -g -fsanitize=address,undefined,leak
-OPT_FLAGS=-O3 -DNDEBUG -march=native -mtune=native
+BIN_DIR=../bin
+PROGRAM=$(BIN_DIR)/mergesort-co
 
-debug: main.cpp
-	$(CXX) $(CXX_FLAGS) $(DEBUG_FLAGS) main.cpp -o main.x -fopenmp
+CC=g++
+CFLAGS=-O3 -fopenmp
+LDFLAGS=-fopenmp
 
-release: main.cpp
-	$(CXX) $(CXX_FLAGS) $(OPT_FLAGS) main.cpp -o main.x -fopenmp
+all: $(PROGRAM) 
+
+$(PROGRAM): mergesort.cpp
+	$(CC) $(CFLAGS) $(VERBOSE) -o $@ $^ $(LDFLAGS)
+
+$(BIN_DIR): 
+	mkdir $@
 
 clean:
-	rm main.x
+	rm -rf $(PROGRAM) *.o
+
+wipe: clean
+	rm -rf *.out *.err
