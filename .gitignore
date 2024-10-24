@@ -7,3 +7,7 @@ build/
 *.o
 *.so
 *.a
+*.aux
+*.log
+*.pdf
+*.synctex.gz

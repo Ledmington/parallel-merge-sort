@@ -35,24 +35,25 @@
 #include <ctime>
 #include <cstring>
 
+#include <omp.h>
+
 /**
  * helper routine: check if array is sorted correctly
  */
 bool isSorted(int ref[], int data[], const size_t size) {
+	bool sorted = true;
 	std::sort(ref, ref + size);
 	for (size_t idx = 0; idx < size; ++idx) {
 		if (ref[idx] != data[idx]) {
-			return false;
+			sorted = false;
 		}
 	}
-	return true;
+	return sorted;
 }
 
 /**
  * sequential merge step (straight-forward implementation)
  */
-// TODO: cut-off could also apply here (extra parameter?)
-// TODO: optional: we can also break merge in two halves
 void MsMergeSequential(int *out, int *in, long begin1, long end1, long begin2,
 					   long end2, long outBegin) {
 	long left = begin1;
@@ -85,14 +86,24 @@ void MsMergeSequential(int *out, int *in, long begin1, long end1, long begin2,
 /**
  * sequential MergeSort
  */
-// TODO: remember one additional parameter (depth)
-// TODO: recursive calls could be taskyfied
-// TODO: task synchronization also is required
-void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
+void MsSequential(int *array, int *tmp, bool inplace, long begin, long end,
+				  long depth) {
 	if (begin < (end - 1)) {
 		const long half = (begin + end) / 2;
-		MsSequential(array, tmp, !inplace, begin, half);
-		MsSequential(array, tmp, !inplace, half, end);
+
+		if (depth == 0) {
+			// when depth reaches 0, we start doing things serially and
+			// recursively
+			MsSequential(array, tmp, !inplace, begin, half, 0);
+			MsSequential(array, tmp, !inplace, half, end, 0);
+		} else {
+#pragma omp task
+			{ MsSequential(array, tmp, !inplace, begin, half, depth - 1); }
+#pragma omp task
+			{ MsSequential(array, tmp, !inplace, half, end, depth - 1); }
+#pragma omp taskwait
+		}
+
 		if (inplace) {
 			MsMergeSequential(array, tmp, begin, half, half, end, begin);
 		} else {
@@ -104,14 +115,23 @@ void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
 }
 
 /**
- * Serial MergeSort
+ * Parallel MergeSort
  */
-// TODO: this function should create the parallel region
-// TODO: good point to compute a good depth level (cut-off)
-void MsSerial(int *array, int *tmp, const size_t size) {
-	// TODO: parallel version of MsSequential will receive one more parameter:
-	// 'depth' (used as cut-off)
-	MsSequential(array, tmp, true, 0, size);
+void MsParallel(int *array, int *tmp, const size_t size) {
+	// Computing depth as log2(n_threads)
+	size_t depth = 0;
+	{
+		size_t x = omp_get_max_threads();
+		while (x > 0) {
+			x >>= 1;
+			depth++;
+		}
+		depth--;
+	}
+
+#pragma omp parallel default(none) shared(array, tmp, size) firstprivate(depth)
+#pragma omp single nowait
+	{ MsSequential(array, tmp, true, 0, size, depth); }
 }
 
 /**
@@ -124,7 +144,7 @@ int main(int argc, char *argv[]) {
 
 	// expect one command line arguments: array size
 	if (argc != 2) {
-		printf("Usage: MergeSort.exe <array size> \n");
+		printf("Usage: %s <array size>\n", argv[0]);
 		printf("\n");
 		return EXIT_FAILURE;
 	} else {
@@ -141,11 +161,12 @@ int main(int argc, char *argv[]) {
 		}
 		std::copy(data, data + stSize, ref);
 
-		double dSize = (stSize * sizeof(int)) / 1024 / 1024;
+		double dSize =
+			static_cast<double>(stSize * sizeof(int)) / 1024.0 / 1024.0;
 		printf("Sorting %zu elements of type int (%f MiB)...\n", stSize, dSize);
 
 		gettimeofday(&t1, NULL);
-		MsSerial(data, tmp, stSize);
+		MsParallel(data, tmp, stSize);
 		gettimeofday(&t2, NULL);
 
 		etime =

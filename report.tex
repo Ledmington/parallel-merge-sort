@@ -1,0 +1,157 @@
+\documentclass[11pt,a4paper,oneside]{book}
+
+\usepackage[english]{babel}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+	backgroundcolor=\color{backcolour},
+	commentstyle=\color{codegreen},
+	keywordstyle=\color{magenta},
+	numberstyle=\tiny\color{codegray},
+	stringstyle=\color{codepurple},
+	basicstyle=\ttfamily\scriptsize,
+	breakatwhitespace=false,
+	breaklines=true,
+	captionpos=b,
+	keepspaces=true,
+	numbers=left,
+	numbersep=3pt,
+	showspaces=false,
+	showstringspaces=false,
+	showtabs=false,
+	tabsize=2,
+	language=C++
+}
+
+\lstset{style=mystyle}
+
+\begin{document}
+	\begin{center}
+		{\LARGE OpenMP MergeSort}\\
+		Filippo Barbari 11045039\\
+		24th october 2024
+	\end{center}
+	
+	\section*{Parallelization strategy}
+	For this challenge, I worked mainly on the \verb|MsSequential| function, so we will focus the analysis on it. In the code listing \ref{mergesort-original} the original implementation of MergeSort is shown completely, while in the listing \ref{mergesort-new} the portion regarding calls to the function \verb|MsMergeSequential| have been omitted since they were not modified.
+	
+	The main focus of this work has been the two recursive calls to \verb|MsSequential| at lines 5 and 6 in listing \ref{mergesort-original}, replaced by the block from line 5 to line 21 in listing \ref{mergesort-new}. Depending on the value of \verb|depth| we choose to spawn two tasks (lines 14-20), one for each half of the array to be sorted, or we sort the two halves of the array serially. At line 20 we use a \verb|#pragma omp taskwait| OpenMP directive to wait for all children tasks to finish, in order to avoid merging two halves that are not yet sorted.
+	
+	\begin{minipage}[t]{0.45\textwidth}
+		\begin{lstlisting}[caption={Original version of MergeSort.},label=mergesort-original]
+void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
+	if (begin < (end - 1)) {
+		const long half = (begin + end)/2;
+		
+		MsSequential(array, tmp, !inplace, begin, half);
+		MsSequential(array, tmp, !inplace, half, end);
+		
+		if (inplace) {
+			
+			MsMergeSequential(array, tmp, begin, half, half, end, begin);
+			
+		} else {
+		
+			MsMergeSequential(tmp, array, begin, half, half, end, begin);
+			
+		}
+		
+	} else if (!inplace) {
+		tmp[begin] = array[begin];
+	}
+}
+		\end{lstlisting}
+	\end{minipage}%
+	\hfill%
+	\begin{minipage}[t]{0.45\textwidth}
+		\begin{lstlisting}[caption={MergeSort implementation parallelized with OpenMP tasks.},label=mergesort-new]
+void MsSequential(int *array, int *tmp, bool inplace, long begin, long end, long depth) {
+	if (begin < (end - 1)) {
+		const long half = (begin + end)/2;
+		
+		if (depth == 0) {
+			// when depth reaches 0,
+			// we start doing things
+			// serially and recursively
+			MsSequential(array, tmp,         !inplace, begin, half, 0);
+			MsSequential(array, tmp,         !inplace, half, end, 0);
+			
+		} else {
+		
+			#pragma omp task
+			{ MsSequential(array, tmp,       !inplace, begin, half, depth - 1); }
+			
+			#pragma omp task
+			{ MsSequential(array, tmp,       !inplace, half, end, depth - 1); }
+			
+			#pragma omp taskwait
+		}
+		
+		// merge ...
+		
+	} else if (!inplace) {
+		tmp[begin] = array[begin];
+	}
+}
+		\end{lstlisting}
+	\end{minipage}
+	
+	Additionally the value of \verb|depth| has been set to $\lfloor log_2(n)\rfloor$, with $n$ being the maximum number of available threads. The reason behind this choice is straightforward: MergeSort splits the input array into subarrays, effectively creating a binary tree, until reaching subarrays with just one element. This kind of tree, with a total of $n$ nodes, has exactly $\lfloor log_2(n)\rfloor$ \textit{floors}, meaning that the longest path from the root of the tree to the furthest leaf is $\lfloor log_2(n)\rfloor$ steps long. By choosing this value, we effectively allow each thread to work on a separate portion of the array in parallel.
+	
+	\section*{Experimental setup}
+	All benchmark results reported in the next paragraph have been measured on the same machine for which the relevant hardware specification are reported in the table \ref{hw-specs}, while the versions of various software used for the benchmarks are reported here:
+	
+	\begin{itemize}
+		\item GNU Make 4.3
+		\item GNU g++ 11.4.0
+	\end{itemize}
+
+	\begin{table}[!ht]
+		\begin{tabular}{|l|l|}
+			\hline
+			CPU Vendor         & Intel        \\ \hline
+			CPU Model          & Core i7 7700 \\ \hline
+			CPU core frequency & 3.60 GHz     \\ \hline
+			CPU physical cores & 4            \\ \hline
+			HyperThreading     & enabled      \\ \hline
+			L3 cache size      & 8 MiB        \\ \hline
+			RAM capacity       & 16 GB        \\ \hline
+			RAM frequency      & 2400 MHz     \\ \hline
+		\end{tabular}
+		\caption{Hardware specifications of the machine used for benchmark measurements.}
+		\label{hw-specs}
+	\end{table}
+	
+	\section*{Benchmark results}
+	The benchmarks consists of an array of $10^8$ 32-bit signed integers randomly generated by using the \verb|rand| function form C's standard library. The program has been executed with different number of threads up to the maximum allowed by the hardware used. Each configuration has been executed 10 times and, in table \ref{benchmark-results}, the mean execution time and the standard deviation are reported in seconds.
+	
+	The numbers reported highlight a positive trend. However, the plateau of times between 2 and 5 threads may point towards a choice of \verb|depth| which resulted in a very coarse parallelization. The sudden jump after 6 threads may be due to high cache locality of each thread's portion of the array.
+	
+	\begin{table}[!ht]
+		\begin{tabular}{|l|l|l|}
+			\hline
+			\# threads & Mean time {[}s{]} & Std. dev. {[}s{]} \\ \hline
+			1          & 12.251            & 0.133             \\ \hline
+			2          & 6.3190            & 0.066             \\ \hline
+			3          & 6.4033            & 0.049             \\ \hline
+			4          & 6.4270            & 0.135             \\ \hline
+			5          & 6.3700            & 0.122             \\ \hline
+			6          & 3.5999            & 0.111             \\ \hline
+			7          & 3.5679            & 0.046             \\ \hline
+			8          & 3.7527            & 0.124             \\ \hline
+		\end{tabular}
+		\caption{Benchmark results. Each benchmark has been executed 10 times and the mean time is reported along with the standard deviation.}
+		\label{benchmark-results}
+	\end{table}
+	
+\end{document}
